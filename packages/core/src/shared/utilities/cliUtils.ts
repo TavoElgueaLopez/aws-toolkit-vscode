@@ -61,11 +61,25 @@ export type AwsClis = Extract<ToolId, 'session-manager-plugin' | 'aws-cli' | 'sa
  * CLIs and their full filenames and download paths for their respective OSes
  * TODO: Add SAM? Other CLIs?
  */
-export const awsClis: { [cli in AwsClis]: Cli } = {
+export const awsClis: { [cli in AwsClis]: Cli } & { pathResolver: Cli } = {
     'session-manager-plugin': {
         command: {
             unix: [path.join('sessionmanagerplugin', 'bin', 'session-manager-plugin')],
-            windows: [path.join('sessionmanagerplugin', 'bin', 'session-manager-plugin.exe')],
+            windows: [
+                // First entry must be relative path for local install (installSsmCli uses cmd[0])
+                path.join('sessionmanagerplugin', 'bin', 'session-manager-plugin.exe'),
+                // System-installed paths for global detection
+                'session-manager-plugin.exe',
+                path.join('C:', 'Program Files', 'Amazon', 'SessionManagerPlugin', 'bin', 'session-manager-plugin.exe'),
+                path.join(
+                    'C:',
+                    'Program Files (x86)',
+                    'Amazon',
+                    'SessionManagerPlugin',
+                    'bin',
+                    'session-manager-plugin.exe'
+                ),
+            ],
         },
         source: {
             // use pkg: zip is unsigned
@@ -75,6 +89,7 @@ export const awsClis: { [cli in AwsClis]: Cli } = {
             },
             windows: {
                 x86: 'https://session-manager-downloads.s3.amazonaws.com/plugin/latest/windows/SessionManagerPlugin.zip',
+                arm: 'https://session-manager-downloads.s3.amazonaws.com/plugin/latest/windows/SessionManagerPlugin.zip',
             },
             linux: {
                 x86: 'https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb',
@@ -184,6 +199,15 @@ export const awsClis: { [cli in AwsClis]: Cli } = {
         name: 'Finch',
         manualInstallLink: 'https://runfinch.com/docs/getting-started/installation/',
         exec: 'finch',
+    },
+    pathResolver: {
+        command: {
+            windows: ['where'],
+            unix: ['which'],
+        },
+        source: {}, // OS utilities used to locate files and executables
+        name: 'Path resolver',
+        manualInstallLink: '',
     },
 }
 
@@ -569,10 +593,7 @@ export async function getOrInstallCli(cli: AwsClis, confirm: boolean, popup: boo
  */
 export async function updateAwsCli(): Promise<string> {
     const selection = await vscode.window.showInformationMessage(
-        localize(
-            'AWS.cli.updateCliPrompt',
-            'Using console credentials requires updating the AWS CLI to the latest version.'
-        ),
+        localize('AWS.cli.updateCliPrompt', 'Console credentials require AWS CLI version 2.32.0 or newer. Update now?'),
         { modal: true },
         'Update'
     )
@@ -582,7 +603,24 @@ export async function updateAwsCli(): Promise<string> {
     }
 
     const result = await installCli('aws-cli', false)
-    void vscode.window.showInformationMessage(localize('AWS.cli.updateSuccess', 'AWS CLI was successfully updated.'))
+
+    // Get the which/ where command, run it to find the AWS CLI path, and display it to the user
+    const whichCommands = getOsCommands(awsClis.pathResolver)
+    if (whichCommands && whichCommands.length > 0) {
+        const whichCmd = whichCommands[0]
+        const cliExec = awsClis['aws-cli'].exec
+        if (cliExec) {
+            getLogger().info(`Running "${whichCmd} ${cliExec}" to find AWS CLI path`)
+            const whichResult = await new ChildProcess(whichCmd, [cliExec]).run()
+            if (whichResult.exitCode === 0 && whichResult.stdout) {
+                const cliPath = whichResult.stdout.trim().split('\n')[0]
+                const cliInUseMessage = `Toolkit is using AWS CLI at "${cliPath}".`
+                getLogger().info(cliInUseMessage)
+                void vscode.window.showInformationMessage(cliInUseMessage)
+            }
+        }
+    }
+
     return result
 }
 

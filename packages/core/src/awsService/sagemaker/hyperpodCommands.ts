@@ -11,6 +11,12 @@ import { SagemakerDevSpaceNode } from './explorer/sagemakerDevSpaceNode'
 import { showConfirmationMessage } from '../../shared/utilities/messages'
 import { SagemakerConstants } from './explorer/constants'
 import { SagemakerHyperpodNode } from './explorer/sagemakerHyperpodNode'
+import { prepareDevEnvConnection, useSageMakerSshKiroExtension, startRemoteViaSageMakerSshKiro } from './model'
+import { startVscodeRemote } from '../../shared/extensions/ssh'
+import { ensureSageMakerSshKiroExtension } from './sagemakerSshKiroUtils'
+import globals from '../../shared/extensionGlobals'
+import { getIdeType } from '../../shared/extensionUtilities'
+import { promptAndApplyExplorerFilter } from './utils'
 
 const localize = nls.loadMessageBundle()
 
@@ -50,16 +56,54 @@ export async function connectToHyperPodDevSpace(node: SagemakerDevSpaceNode): Pr
         return
     }
 
+    if (useSageMakerSshKiroExtension()) {
+        await ensureSageMakerSshKiroExtension(globals.context)
+    }
+
     try {
         const kubectlClient = node.getParent().getKubectlClient(node.hpCluster.clusterName)
         if (!kubectlClient) {
             logger.error(`No kubectlClient available for cluster: ${node.hpCluster.clusterName}`)
             return
         }
-        const response = await kubectlClient.createWorkspaceConnection(node.devSpace)
-        getLogger().debug(`HyperPod connection response: &O`, response)
-        await vscode.env.openExternal(vscode.Uri.parse(response.url))
-        void vscode.window.showInformationMessage(`Started connection to HyperPod dev space: ${node.devSpace.name}`)
+
+        const eksCluster = kubectlClient.getEksCluster()
+
+        // Call createWorkspaceConnection to get presigned URL with credentials
+        const workspaceConnection = await kubectlClient.createWorkspaceConnection(node.devSpace, getIdeType())
+        const connectionUrl = workspaceConnection.url
+
+        const remoteEnv = await prepareDevEnvConnection({
+            spaceArn: '',
+            ctx: globals.context,
+            connectionType: 'smhp_lc',
+            isSMUS: false,
+            workspaceName: node.devSpace.name,
+            clusterName: node.devSpace.cluster,
+            namespace: node.devSpace.namespace,
+            region: node.regionCode,
+            clusterArn: node.hpCluster.clusterArn,
+            accountId: node.hpCluster.clusterArn.split(':')[4],
+            eksEndpoint: eksCluster?.endpoint,
+            eksCertAuthData: eksCluster?.certificateAuthority?.data,
+            eksClusterName: eksCluster?.name,
+            wsUrl: connectionUrl,
+            token: workspaceConnection.token || undefined,
+            session: workspaceConnection.sessionId || undefined,
+        })
+
+        const startRemote = useSageMakerSshKiroExtension() ? startRemoteViaSageMakerSshKiro : startVscodeRemote
+        await startRemote(
+            remoteEnv.SessionProcess,
+            remoteEnv.hostname,
+            '/home/sagemaker-user',
+            remoteEnv.vscPath,
+            'sagemaker-user'
+        )
+
+        void vscode.window.showInformationMessage(
+            `Connected to HyperPod dev space: ${node.devSpace.name} (${node.devSpace.namespace})`
+        )
     } catch (error) {
         logger.error(`Failed to connect to HyperPod dev space: ${error}`)
         void vscode.window.showErrorMessage(
@@ -82,8 +126,8 @@ export async function startHyperpodSpaceCommand(node: SagemakerDevSpaceNode): Pr
     }
     // Set transitional state immediately
     node.devSpace.status = 'Starting'
-    node.contextValue = 'awsSagemakerHyperpodDevSpaceTransitionalNode'
-    await node.refreshNode()
+    node.updateWorkspace()
+    await vscode.commands.executeCommand('aws.refreshAwsExplorerNode', node)
 
     const kc = node.getParent().getKubectlClient(node.hpCluster.clusterName)
     if (!kc) {
@@ -112,8 +156,8 @@ export async function stopHyperPodSpaceCommand(node: SagemakerDevSpaceNode): Pro
 
     // Set transitional state immediately
     node.devSpace.status = 'Stopping'
-    node.contextValue = 'awsSagemakerHyperpodDevSpaceTransitionalNode'
-    await node.refreshNode()
+    node.updateWorkspace()
+    await vscode.commands.executeCommand('aws.refreshAwsExplorerNode', node)
 
     const kc = node.getParent().getKubectlClient(node.hpCluster.clusterName)
     if (!kc) {
@@ -164,19 +208,7 @@ export async function filterDevSpacesByNamespaceCluster(hpNode: SagemakerHyperpo
         SagemakerConstants.FilterHyperpodPlaceholderKey,
         SagemakerConstants.FilterHyperpodPlaceholderMessage
     )
-    const result = await vscode.window.showQuickPick(items, {
-        placeHolder: placeholder,
-        canPickMany: true,
-        matchOnDetail: true,
-    })
-
-    if (!result) {
-        return // User canceled
-    }
-
-    const newSelection = result.map((r) => r.key)
-    if (newSelection.length !== previousSelection.size || newSelection.some((key) => !previousSelection.has(key))) {
-        hpNode.saveSelectedClusterNamespaces(newSelection)
-        await vscode.commands.executeCommand('aws.refreshAwsExplorerNode', hpNode)
-    }
+    await promptAndApplyExplorerFilter(hpNode, items, placeholder, previousSelection, (selection) =>
+        hpNode.saveSelectedClusterNamespaces(selection)
+    )
 }

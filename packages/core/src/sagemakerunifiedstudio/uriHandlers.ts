@@ -8,7 +8,18 @@ import { SearchParams } from '../shared/vscode/uriHandler'
 import { ExtContext } from '../shared/extensions'
 import { deeplinkConnect } from '../awsService/sagemaker/commands'
 import { telemetry } from '../shared/telemetry/telemetry'
-import { SmusAuthMode } from '../shared/telemetry/telemetry.gen'
+import { getLogger } from '../shared/logger/logger'
+import { recordDeeplinkConnectTelemetry } from './shared/telemetry'
+
+const amzHeaders = [
+    'X-Amz-Security-Token',
+    'X-Amz-Algorithm',
+    'X-Amz-Date',
+    'X-Amz-SignedHeaders',
+    'X-Amz-Credential',
+    'X-Amz-Expires',
+    'X-Amz-Signature',
+] as const
 /**
  * Registers the SMUS deeplink URI handler at path `/connect/smus`.
  *
@@ -21,7 +32,15 @@ import { SmusAuthMode } from '../shared/telemetry/telemetry.gen'
 export function register(ctx: ExtContext) {
     async function connectHandler(params: ReturnType<typeof parseConnectParams>) {
         await telemetry.smus_deeplinkConnect.run(async (span) => {
-            span.record(extractTelemetryMetadata(params))
+            recordDeeplinkConnectTelemetry(span, {
+                connectionIdentifier: params.connection_identifier,
+                smusDomainId: params.smus_domain_id,
+                smusDomainAccountId: params.smus_domain_account_id,
+                smusProjectId: params.smus_project_id,
+                smusDomainRegion: params.smus_domain_region,
+                smusAuthMode: params.smus_auth_mode,
+                smusDomainMode: params.smus_domain_mode,
+            })
 
             // WORKAROUND: The ws_url from the startSession API call contains a query parameter
             // 'cell-number' within itself. When the entire deeplink URL is processed by the URI
@@ -29,18 +48,28 @@ export function register(ctx: ExtContext) {
             // instead of remaining part of the ws_url. This causes the ws_url to lose the
             // cell-number context it needs. To fix this, we manually re-append the cell-number
             // query parameter back to the ws_url to restore the original intended URL structure.
+            let wsUrl = `${params.ws_url}&cell-number=${encodeURIComponent(params['cell-number'])}`
+
+            for (const header of amzHeaders) {
+                const value = params[header]
+                if (value) {
+                    wsUrl += `&${header}=${encodeURIComponent(value)}`
+                }
+            }
+
             await deeplinkConnect(
                 ctx,
                 params.connection_identifier,
                 params.session,
-                `${params.ws_url}&cell-number=${params['cell-number']}`, // Re-append cell-number to ws_url
+                wsUrl, // Re-append cell-number and SigV4 headers to ws_url
                 params.token,
                 params.domain,
                 params.app_type,
                 undefined,
                 undefined,
                 undefined,
-                true // isSMUS=true for SMUS connections
+                true, // isSMUS
+                params.reconnect_base_url
             )
         })
     }
@@ -67,6 +96,7 @@ export function register(ctx: ExtContext) {
  * - smus_project_id: SMUS project identifier
  * - smus_domain_region: SMUS domain region
  * - smus_auth_mode: Authentication mode (sso or iam)
+ * - reconnect_base_url: Console base URL for session reconnect (absent on older consoles)
  *
  * Note: The ws_url from startSession API originally includes cell-number as a query parameter.
  * However, when the deeplink URL is processed, the URI handler extracts cell-number as a
@@ -77,6 +107,19 @@ export function register(ctx: ExtContext) {
  * @throws Error if required parameters are missing
  */
 export function parseConnectParams(query: SearchParams) {
+    // Extract session from ws_url as fallback. When the deep link URL contains sigv4 params
+    // embedded inside ws_url with single percent-encoding, VS Code's URI parser can decode
+    // the %26 separators, causing those params to break out as top-level query params and
+    // displacing 'session'. The session ID is always present in the ws_url data-channel path.
+    const wsUrl = query.get('ws_url')
+    if (!query.has('session') && wsUrl) {
+        const match = wsUrl.match(/data-channel\/([^?&]+)/)
+        if (match) {
+            getLogger().info(`Recovered missing session from ws_url: ${match[1]}`)
+            query.set('session', match[1])
+        }
+    }
+
     const requiredParams = query.getFromKeysOrThrow(
         'connection_identifier',
         'domain',
@@ -92,41 +135,11 @@ export function parseConnectParams(query: SearchParams) {
         'smus_domain_account_id',
         'smus_project_id',
         'smus_domain_region',
-        'smus_auth_mode'
+        'smus_auth_mode',
+        'smus_domain_mode',
+        'reconnect_base_url'
     )
 
-    return { ...requiredParams, ...optionalParams }
-}
-
-/**
- * Extracts telemetry metadata from URI parameters and space ARN.
- *
- * @param params Parsed URI parameters
- * @returns Telemetry metadata object
- */
-function extractTelemetryMetadata(params: ReturnType<typeof parseConnectParams>) {
-    // Extract metadata from space ARN
-    // ARN format: arn:aws:sagemaker:region:account-id:space/domain-id/space-name
-    const arnParts = params.connection_identifier.split(':')
-    const resourceParts = arnParts[5]?.split('/') // Gets "space/domain-id/space-name"
-
-    const projectRegion = arnParts[3] // region from ARN
-    const projectAccountId = arnParts[4] // account-id from ARN
-    const domainIdFromArn = resourceParts?.[1] // domain-id from ARN
-    const spaceName = resourceParts?.[2] // space-name from ARN
-
-    // Validate and cast smusAuthMode to the expected type
-    const authMode = params.smus_auth_mode
-    const smusAuthMode: SmusAuthMode | undefined = authMode === 'sso' || authMode === 'iam' ? authMode : undefined
-
-    return {
-        smusDomainId: params.smus_domain_id,
-        smusDomainAccountId: params.smus_domain_account_id,
-        smusProjectId: params.smus_project_id,
-        smusDomainRegion: params.smus_domain_region,
-        smusProjectRegion: projectRegion,
-        smusProjectAccountId: projectAccountId,
-        smusSpaceKey: domainIdFromArn && spaceName ? `${domainIdFromArn}/${spaceName}` : undefined,
-        smusAuthMode: smusAuthMode,
-    }
+    const amzHeaderParams = query.getFromKeys(...amzHeaders)
+    return { ...requiredParams, ...optionalParams, ...amzHeaderParams }
 }

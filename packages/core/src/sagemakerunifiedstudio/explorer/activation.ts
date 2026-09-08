@@ -21,9 +21,11 @@ import { isSmusIamConnection } from '../auth/model'
 import { setupUserActivityMonitoring } from '../../awsService/sagemaker/sagemakerSpace'
 import { telemetry } from '../../shared/telemetry/telemetry'
 import { isSageMaker } from '../../shared/extensionUtilities'
+import { createAgentsFile } from '../bootstrapAgentContext'
 import { recordSpaceTelemetry } from '../shared/telemetry'
 import { DataZoneClient } from '../shared/client/datazoneClient'
 import { handleCredExpiredError } from '../shared/credentialExpiryHandler'
+import { SmusAuthenticationOrchestrator } from '../auth/authenticationOrchestrator'
 
 export async function activate(extensionContext: vscode.ExtensionContext): Promise<void> {
     // Initialize the SMUS authentication provider
@@ -35,6 +37,12 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     // Set initial auth context after restore
     void setSmusConnectedContext(smusAuthProvider.isConnected())
     logger.debug('Authentication provider initialized')
+
+    // If a console sign-in in the previous window was interrupted by a credential-cache window
+    // reload, resume it automatically (straight to domain selection). Non-blocking.
+    void SmusAuthenticationOrchestrator.resumePendingConsoleSignIn(extensionContext, smusAuthProvider).catch((e) => {
+        logger.error('Failed to resume pending console sign-in: %O', e)
+    })
 
     // Create the SMUS projects tree view
     const smusRootNode = new SageMakerUnifiedStudioRootNode(smusAuthProvider, extensionContext)
@@ -165,6 +173,9 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
             logger.error(`Error in UserActivityMonitoring: ${error}`)
             throw error
         }
+
+        // Create AGENTS.md to provide SageMaker-specific context for AI code generation
+        await createAgentsFile(extensionContext)
     } else {
         logger.info('Not in SageMaker Unified Studio remote environment, skipping user activity monitoring')
     }

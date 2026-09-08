@@ -7,8 +7,8 @@ import {
     ConnectionCredentials,
     ConnectionSummary,
     DataZone,
+    EnvironmentBlueprintSummary,
     GetConnectionCommandOutput,
-    GetEnvironmentCredentialsCommandOutput,
     ListConnectionsCommandOutput,
     PhysicalEndpoint,
     RedshiftPropertiesOutput,
@@ -19,7 +19,6 @@ import {
 } from '@aws-sdk/client-datazone'
 import { getLogger } from '../../../shared/logger/logger'
 import { DefaultStsClient } from '../../../shared/clients/stsClient'
-import { getContext } from '../../../shared/vscode/setContext'
 import { CredentialsProvider } from '../../../auth/providers/credentials'
 import { DevSettings } from '../../../shared/settings'
 import { ToolkitError } from '../../../shared/errors'
@@ -104,10 +103,6 @@ export interface DataZoneConnection {
      */
     glueConnectionName?: string
 }
-
-// Constants for DataZone environment configuration
-const toolingBlueprintName = 'Tooling'
-const sageMakerProviderName = 'Amazon SageMaker'
 
 /**
  * Client for interacting with AWS DataZone API
@@ -229,52 +224,48 @@ export class DataZoneClient {
 
     /**
      * Gets the default tooling environment credentials for a DataZone project
+     * Uses the IAM connection to retrieve credentials via GetConnection API
      * @param projectId The DataZone project identifier
-     * @returns Promise resolving to environment credentials
-     * @throws Error if tooling blueprint or environment is not found
+     * @returns Promise resolving to connection credentials
+     * @throws Error if IAM connection is not found or credentials cannot be retrieved
      */
-    public async getProjectDefaultEnvironmentCreds(projectId: string): Promise<GetEnvironmentCredentialsCommandOutput> {
+    public async getProjectDefaultEnvironmentCreds(projectId: string): Promise<ConnectionCredentials> {
         try {
             this.logger.debug(
-                `Getting project default environment credentials for domain ${this.domainId}, project ${projectId}`
+                `Getting project IAM connection credentials for domain ${this.domainId}, project ${projectId}`
             )
-            const datazoneClient = await this.getDataZoneClient()
 
-            this.logger.debug('Listing environment blueprints')
-            const domainBlueprints = await datazoneClient.listEnvironmentBlueprints({
-                domainIdentifier: this.domainId,
-                managed: true,
-                name: this.getToolingBlueprintName(),
-            })
-            const toolingBlueprint = domainBlueprints.items?.[0]
-            if (!toolingBlueprint) {
-                this.logger.error('Failed to get tooling blueprint')
-                throw new Error('Failed to get tooling blueprint')
+            // List IAM connections directly using type filter
+            const response = await this.fetchConnections(this.domainId, projectId, ConnectionType.IAM)
+            // If both exist, project.iam is returned.
+            const iamConnection =
+                response.items?.find((conn) => conn.name === 'project.iam') ??
+                response.items?.find((conn) => conn.name === 'default.iam')
+
+            if (!iamConnection || !iamConnection.connectionId) {
+                throw new ToolkitError('No IAM connection found for project', {
+                    code: SmusErrorCodes.NoIamConnectionFound,
+                })
             }
-            this.logger.debug(`Found tooling blueprint with ID: ${toolingBlueprint.id}, listing environments`)
 
-            const listEnvs = await datazoneClient.listEnvironments({
+            this.logger.debug(`Found IAM connection with ID: ${iamConnection.connectionId}, getting credentials`)
+
+            // Get the connection with credentials
+            const connectionWithCreds = await this.getConnection({
                 domainIdentifier: this.domainId,
-                projectIdentifier: projectId,
-                environmentBlueprintIdentifier: toolingBlueprint.id,
-                provider: sageMakerProviderName,
+                identifier: iamConnection.connectionId,
+                withSecret: true,
             })
 
-            const defaultEnv = listEnvs.items?.[0]
-            if (!defaultEnv) {
-                this.logger.error('Failed to find default Tooling environment')
-                throw new Error('Failed to find default Tooling environment')
+            if (!connectionWithCreds.connectionCredentials) {
+                throw new ToolkitError('IAM connection credentials not available', {
+                    code: SmusErrorCodes.NoIamConnectionCredentials,
+                })
             }
-            this.logger.debug(`Found default environment with ID: ${defaultEnv.id}, getting environment credentials`)
 
-            const defaultEnvCreds = await datazoneClient.getEnvironmentCredentials({
-                domainIdentifier: this.domainId,
-                environmentIdentifier: defaultEnv.id,
-            })
-
-            return defaultEnvCreds
+            return connectionWithCreds.connectionCredentials
         } catch (err) {
-            this.logger.error('Failed to get project default environment credentials: %s', err as Error)
+            this.logger.error('Failed to get project IAM connection credentials: %s', err as Error)
             throw err
         }
     }
@@ -632,6 +623,25 @@ export class DataZoneClient {
             type: ConnectionType,
         })
     }
+
+    /**
+     * Lists environment blueprints for a domain
+     * @param domainId The DataZone domain identifier
+     * @param options Optional filters (managed, name)
+     * @returns Array of environment blueprint summaries
+     */
+    public async listEnvironmentBlueprints(
+        domainId: string,
+        options?: { managed?: boolean; name?: string }
+    ): Promise<EnvironmentBlueprintSummary[]> {
+        const datazoneClient = await this.getDataZoneClient()
+        const response = await datazoneClient.listEnvironmentBlueprints({
+            domainIdentifier: domainId,
+            managed: options?.managed,
+            name: options?.name,
+        })
+        return response.items ?? []
+    }
     /**
      * Lists connections in a DataZone environment
      * @param domainId The DataZone domain identifier
@@ -713,60 +723,15 @@ export class DataZoneClient {
         this.logger.debug(`Getting tooling environment ID for domain ${domainId}, project ${projectId}`)
         const datazoneClient = await this.getDataZoneClient()
 
-        let domainBlueprints
-        try {
-            // Get the tooling blueprint
-            domainBlueprints = await datazoneClient.listEnvironmentBlueprints({
-                domainIdentifier: domainId,
-                managed: true,
-                name: this.getToolingBlueprintName(),
-            })
-        } catch (err) {
-            this.logger.error(
-                'Failed to list environment blueprints for domain %s, %s',
-                domainId,
-                (err as Error).message
-            )
-            throw err
-        }
+        const toolingEnv = await this.getToolingEnvironmentForProject(datazoneClient, domainId, projectId)
 
-        const toolingBlueprint = domainBlueprints.items?.[0]
-        if (!toolingBlueprint) {
-            this.logger.error('No tooling blueprint found for domain %s', domainId)
-            throw new Error('No tooling blueprint found')
-        }
-
-        // List environments for the project
-        let listEnvs
-        try {
-            this.logger.debug(`Listing environments for project ${projectId} with blueprint ${toolingBlueprint.id}`)
-            listEnvs = await datazoneClient.listEnvironments({
-                domainIdentifier: domainId,
-                projectIdentifier: projectId,
-                environmentBlueprintIdentifier: toolingBlueprint.id,
-                provider: sageMakerProviderName,
-            })
-        } catch (err) {
-            this.logger.error(
-                'Failed to list environments for domainId: %s, projectId: %s, %s',
-                domainId,
-                projectId,
-                (err as Error).message
-            )
-            throw err
-        }
-
-        const defaultEnv = listEnvs.items?.[0]
-        if (!defaultEnv || !defaultEnv.id) {
-            this.logger.error(
-                'No default Tooling environment found for domainId: %s, projectId: %s',
-                domainId,
-                projectId
-            )
+        if (!toolingEnv?.id) {
+            this.logger.error('No tooling environment found for domain %s, project %s', domainId, projectId)
             throw new Error('No default Tooling environment found for project')
         }
-        this.logger.debug(`Found tooling environment with ID: ${defaultEnv.id}`)
-        return defaultEnv.id
+
+        this.logger.debug(`Found tooling environment with ID: ${toolingEnv.id}`)
+        return toolingEnv.id
     }
 
     /**
@@ -775,13 +740,24 @@ export class DataZoneClient {
      * @returns Promise resolving to environment details
      */
     public async getEnvironmentDetails(
-        environmentId: string
+        environmentId: string,
+        projectId?: string
     ): Promise<import('@aws-sdk/client-datazone').GetEnvironmentCommandOutput> {
         try {
             this.logger.debug(
                 `Getting environment details for domain ${this.getDomainId()}, environment ${environmentId}`
             )
-            const datazoneClient = await this.getDataZoneClient()
+
+            let datazoneClient
+            if (projectId) {
+                // Prefer using project credentials to get environment details, as it's part of the project
+                this.logger.debug('Getting project environment credentials')
+                const creds = await this.getProjectDefaultEnvironmentCreds(projectId)
+                datazoneClient = this.createProjectCredentialsDataZoneClient(creds)
+            } else {
+                // Note: This will not work in cross-account
+                datazoneClient = await this.getDataZoneClient()
+            }
 
             const environment = await datazoneClient.getEnvironment({
                 domainIdentifier: this.getDomainId(),
@@ -806,7 +782,7 @@ export class DataZoneClient {
         if (!toolingEnvId) {
             throw new Error('No default environment found for project')
         }
-        return await this.getEnvironmentDetails(toolingEnvId)
+        return await this.getEnvironmentDetails(toolingEnvId, projectId)
     }
 
     public async getUserId(): Promise<string | undefined> {
@@ -865,9 +841,66 @@ export class DataZoneClient {
     }
 
     /**
-     * Gets the correct tooling blueprint name
+     * Finds the tooling environment for a project by resolving the IAM connection's
+     * environmentId. This works regardless of whether the tooling environment was created
+     * from a managed blueprint (Tooling/ToolingLite) or a custom blueprint.
+     *
+     * Resolution order: `project.iam` (IdC domains) → `default.iam` (IAM domains, guaranteed present).
+     *
+     * @param _datazoneClient Unused — retained for signature compatibility with callers
+     * @param domainId The domain identifier
+     * @param projectId The project identifier
+     * @returns The tooling environment details, or undefined if no IAM connection found
      */
-    private getToolingBlueprintName(): string {
-        return getContext('aws.smus.isIamMode') ? 'ToolingLite' : toolingBlueprintName
+    private async getToolingEnvironmentForProject(
+        _datazoneClient: DataZone,
+        domainId: string,
+        projectId: string
+    ): Promise<{ id: string } | undefined> {
+        try {
+            // Find the IAM connection — its environmentId points to the tooling environment
+            const response = await this.fetchConnections(domainId, projectId, ConnectionType.IAM)
+            const iamConnection =
+                response.items?.find((conn) => conn.name === 'project.iam') ??
+                response.items?.find((conn) => conn.name === 'default.iam')
+
+            if (!iamConnection?.environmentId) {
+                this.logger.debug(
+                    `No IAM connection with environmentId found for domain ${domainId}, project ${projectId}`
+                )
+                return undefined
+            }
+
+            this.logger.debug(
+                `Found tooling environment ${iamConnection.environmentId} via IAM connection '${iamConnection.name}'`
+            )
+
+            // Do not call getEnvironment here. The scoped-down admin creds used on the
+            // SSO + IAM domain path lack that permission. getEnvironmentDetails() fetches
+            // project creds before calling it downstream.
+            return { id: iamConnection.environmentId }
+        } catch (err) {
+            this.logger.error('Failed to get tooling environment for domain %s: %s', domainId, (err as Error).message)
+            throw new ToolkitError('Failed to get tooling environment', { code: 'ToolingEnvironmentError' })
+        }
+    }
+
+    /**
+     * Creates a one-off DataZone SDK client with raw credentials, respecting endpoint overrides.
+     */
+    private createProjectCredentialsDataZoneClient(creds: ConnectionCredentials): DataZone {
+        const clientConfig: any = {
+            region: this.getRegion(),
+            credentials: {
+                accessKeyId: creds.accessKeyId!,
+                secretAccessKey: creds.secretAccessKey!,
+                sessionToken: creds.sessionToken!,
+            },
+        }
+        const customEndpoint = DevSettings.instance.get('endpoints', {})['datazone']
+        if (customEndpoint) {
+            clientConfig.endpoint = customEndpoint
+        }
+        return new DataZone(clientConfig)
     }
 }

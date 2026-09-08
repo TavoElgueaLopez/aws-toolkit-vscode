@@ -10,7 +10,12 @@ import { SagemakerSpaceNode } from './explorer/sagemakerSpaceNode'
 import { SagemakerStudioNode } from './explorer/sagemakerStudioNode'
 import * as uriHandlers from './uriHandlers'
 import { openRemoteConnect, filterSpaceAppsByDomainUserProfiles, stopSpace } from './commands'
-import { updateIdleFile, startMonitoringTerminalActivity, ActivityCheckInterval } from './utils'
+import {
+    updateIdleFile,
+    startMonitoringTerminalActivity,
+    startMonitoringBackgroundState,
+    ActivityCheckInterval,
+} from './utils'
 import { ExtContext } from '../../shared/extensions'
 import { telemetry } from '../../shared/telemetry/telemetry'
 import { isSageMaker, UserActivity } from '../../shared/extensionUtilities'
@@ -21,23 +26,48 @@ import {
     stopHyperPodSpaceCommand,
 } from './hyperpodCommands'
 import { SagemakerHyperpodNode } from './explorer/sagemakerHyperpodNode'
+import { getLogger } from '../../shared/logger/logger'
+import { RemoteSshSettings } from '../../shared/extensions/ssh'
 
 let terminalActivityInterval: NodeJS.Timeout | undefined
+let backgroundStateInterval: NodeJS.Timeout | undefined
 
 export async function activate(ctx: ExtContext): Promise<void> {
+    // Remove stale SageMaker remotePlatform entries (sm_, smc_, smhp_) on Windows.
+    // Prevents Remote-SSH from auto-reconnecting to a dead SSM session before the
+    // toolkit's local server is ready.
+    if (process.platform === 'win32') {
+        void new RemoteSshSettings()
+            .removeRemotePlatforms((h) => /^smc?_|^smhpc?_/.test(h))
+            .then((removed) => {
+                getLogger().info('sagemaker: cleaned %d stale remotePlatform entries', removed)
+            })
+            .catch((e) => {
+                getLogger().warn('sagemaker: remotePlatform cleanup failed: %s', (e as Error).message)
+            })
+    }
+
     ctx.extensionContext.subscriptions.push(
         uriHandlers.register(ctx),
         Commands.register('aws.sagemaker.openRemoteConnection', async (node: SagemakerSpaceNode) => {
             if (!validateNode(node)) {
                 return
             }
-            await telemetry.sagemaker_openRemoteConnection.run(async () => {
+            await telemetry.sagemaker_openRemoteConnection.run(async (span) => {
+                span.record({
+                    awsAccount: node.parent.callerIdentity?.Account || undefined,
+                    awsRegion: node.regionCode,
+                })
                 await openRemoteConnect(node, ctx.extensionContext)
             })
         }),
 
         Commands.register('aws.sagemaker.filterSpaceApps', async (node: SagemakerStudioNode) => {
-            await telemetry.sagemaker_filterSpaces.run(async () => {
+            await telemetry.sagemaker_filterSpaces.run(async (span) => {
+                span.record({
+                    awsAccount: node.callerIdentity?.Account || undefined,
+                    awsRegion: node.regionCode,
+                })
                 await filterSpaceAppsByDomainUserProfiles(node)
             })
         }),
@@ -46,7 +76,11 @@ export async function activate(ctx: ExtContext): Promise<void> {
             if (!validateNode(node)) {
                 return
             }
-            await telemetry.sagemaker_stopSpace.run(async () => {
+            await telemetry.sagemaker_stopSpace.run(async (span) => {
+                span.record({
+                    awsAccount: node.parent.callerIdentity?.Account || undefined,
+                    awsRegion: node.regionCode,
+                })
                 await stopSpace(node, ctx.extensionContext)
             })
         }),
@@ -78,26 +112,39 @@ export async function activate(ctx: ExtContext): Promise<void> {
 
     // If running in SageMaker AI Space, track user activity for autoshutdown feature
     if (isSageMaker('SMAI')) {
-        // Use /tmp/ directory so the file is cleared on each reboot to prevent stale timestamps.
-        const tmpDirectory = '/tmp/'
-        const idleFilePath = path.join(tmpDirectory, '.sagemaker-last-active-timestamp')
+        getLogger().info('SMAI environment detected - starting user activity monitoring')
 
-        const userActivity = new UserActivity(ActivityCheckInterval)
-        userActivity.onUserActivity(() => updateIdleFile(idleFilePath))
+        try {
+            // Use /tmp/ directory so the file is cleared on each reboot to prevent stale timestamps.
+            const tmpDirectory = '/tmp/'
+            const idleFilePath = path.join(tmpDirectory, '.sagemaker-last-active-timestamp')
 
-        terminalActivityInterval = startMonitoringTerminalActivity(idleFilePath)
+            const userActivity = new UserActivity(ActivityCheckInterval)
+            userActivity.onUserActivity(() => updateIdleFile(idleFilePath))
 
-        // Write initial timestamp
-        await updateIdleFile(idleFilePath)
+            terminalActivityInterval = startMonitoringTerminalActivity(idleFilePath)
+            backgroundStateInterval = startMonitoringBackgroundState(idleFilePath)
 
-        ctx.extensionContext.subscriptions.push(userActivity, {
-            dispose: () => {
-                if (terminalActivityInterval) {
-                    clearInterval(terminalActivityInterval)
-                    terminalActivityInterval = undefined
-                }
-            },
-        })
+            // Write initial timestamp
+            await updateIdleFile(idleFilePath)
+
+            ctx.extensionContext.subscriptions.push(userActivity, {
+                dispose: () => {
+                    if (terminalActivityInterval) {
+                        clearInterval(terminalActivityInterval)
+                        terminalActivityInterval = undefined
+                    }
+                    if (backgroundStateInterval) {
+                        clearInterval(backgroundStateInterval)
+                        backgroundStateInterval = undefined
+                    }
+                },
+            })
+        } catch (error) {
+            getLogger().error(`Error in MonitoringTerminalActivity: ${error}`)
+        }
+    } else {
+        getLogger().info('Not in SMAI environment, skipping user activity monitoring')
     }
 }
 

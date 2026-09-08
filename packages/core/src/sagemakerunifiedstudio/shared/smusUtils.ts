@@ -11,6 +11,8 @@ import fetch from 'node-fetch'
 import { CredentialsProvider, CredentialsProviderType } from '../../auth/providers/credentials'
 import { CredentialType } from '../../shared/telemetry/telemetry'
 import { AwsCredentialIdentity } from '@aws-sdk/types'
+import { ConnectionType } from '@aws-sdk/client-datazone'
+import { DataZoneClient } from './client/datazoneClient'
 
 /**
  * Represents SSO instance information retrieved from DataZone
@@ -93,6 +95,12 @@ export const SmusErrorCodes = {
     NoGroupProfileFound: 'NoGroupProfileFound',
     /** Error code for when no user profile is found for IAM principal */
     NoUserProfileFound: 'NoUserProfileFound',
+    /** Error code for when no IAM connection (project.iam) is found for project */
+    NoIamConnectionFound: 'NoIamConnectionFound',
+    /** Error code for when IAM connection credentials are not available */
+    NoIamConnectionCredentials: 'NoIamConnectionCredentials',
+    /** Error code for when no SageMaker domain is provisioned in the tooling environment (custom blueprints) */
+    NoSageMakerDomain: 'NoSageMakerDomain',
 } as const
 
 /**
@@ -301,6 +309,7 @@ export class SmusUtils {
                     'Content-Type': 'application/json',
                     Accept: 'application/json',
                     'User-Agent': 'aws-toolkit-vscode',
+                    Origin: new URL(domainUrl).origin,
                 },
                 body: JSON.stringify(requestBody),
                 timeout: SmusTimeouts.apiCallTimeoutMs,
@@ -552,6 +561,43 @@ export function isIamDomain(input: IamDomainCheckInput): boolean {
         `IAM domain check${domainIdLog}: IamSignIns does not contain both IAM_ROLE and IAM_USER, returning false`
     )
     return false
+}
+
+/**
+ * Determines if a domain is an IAM (EXPRESS) domain by checking for the presence
+ * of a 'default.iam' connection in the IAM connections list.
+ *
+ * @param client - DataZone client instance
+ * @param domainId - The domain identifier
+ * @param projectId - The project identifier (optional, but recommended for accurate results)
+ * @returns Promise resolving to true if a 'default.iam' IAM connection exists, false otherwise
+ */
+export async function isExpressDomain(client: DataZoneClient, domainId: string, projectId?: string): Promise<boolean> {
+    const logger = getLogger('smus')
+    try {
+        const iamConnections = await client.fetchConnections(domainId, projectId, ConnectionType.IAM)
+        logger.debug('isExpressDomain: iamConnections response: %O', iamConnections)
+
+        const defaultIam = iamConnections.items?.find((connection) => connection.name === 'default.iam')
+        const projectIam = iamConnections.items?.find((connection) => connection.name === 'project.iam')
+
+        logger.debug(
+            `isExpressDomain check for domain ${domainId}: found ${iamConnections.items?.length ?? 0} IAM connections, defaultIam=${!!defaultIam}, projectIam=${!!projectIam}`
+        )
+
+        if (defaultIam && projectIam) {
+            // Both connections exist (e.g. migrated domain). Presence of default.iam is authoritative.
+            logger.debug(
+                `isExpressDomain: both default.iam and project.iam exist for domain ${domainId}, treating as IAM domain`
+            )
+            return true
+        }
+
+        return !!defaultIam
+    } catch (err) {
+        logger.warn(`Failed to check for EXPRESS domain via IAM connections: ${(err as Error).message}`)
+        return false
+    }
 }
 
 /**

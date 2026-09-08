@@ -2,7 +2,7 @@
     "name": "aws-toolkit-vscode",
     "displayName": "AWS Toolkit",
     "description": "Including CodeCatalyst, Infrastructure Composer, and support for Lambda, S3, CloudWatch Logs, CloudFormation, and many other services.",
-    "version": "3.93.0-SNAPSHOT",
+    "version": "4.16.0-SNAPSHOT",
     "extensionKind": [
         "workspace"
     ],
@@ -58,7 +58,7 @@
     },
     "scripts": {
         "vscode:prepublish": "npm run clean && npm run buildScripts && webpack --mode production",
-        "buildScripts": "npm run generateNonCodeFiles && npm run copyFiles && npm run generateIcons && npm run generateSettings && npm run generateConfigurationAttributes && tsc -p ./ --noEmit",
+        "buildScripts": "npm run build:sagemaker-ssh-kiro && npm run generateNonCodeFiles && npm run copyFiles && npm run generateIcons && npm run generateSettings && npm run generateConfigurationAttributes && tsc -p ./ --noEmit",
         "generateConfigurationAttributes": "ts-node ./scripts/build/generateConfigurationAttributes.ts",
         "generateNonCodeFiles": "ts-node ../../scripts/generateNonCodeFiles.ts",
         "copyFiles": "ts-node ./scripts/build/copyFiles.ts",
@@ -75,6 +75,7 @@
         "testE2ECfn": "npm run testCompile && c8 --allowExternal ts-node ../core/scripts/test/launchTest.ts e2e dist/test/e2e/cloudformation/index.js ../core/dist/src/testFixtures/workspaceFolder",
         "testInteg": "npm run testCompile && c8 --allowExternal ts-node ../core/scripts/test/launchTest.ts integration dist/test/integ/index.js ../core/dist/src/testFixtures/workspaceFolder",
         "package": "ts-node ../../scripts/package.ts",
+        "build:sagemaker-ssh-kiro": "npm run package -w sagemaker-ssh-kiro",
         "lint": "true",
         "createRelease": "ts-node ../../scripts/createRelease.ts",
         "newChange": "ts-node ../../scripts/newChange.ts",
@@ -530,6 +531,11 @@
                     ],
                     "default": "alwaysAsk",
                     "description": "Configure optional changeset flags for CloudFormation templates"
+                },
+                "aws.threatComposer.cdn": {
+                    "type": "string",
+                    "default": "https://ide-toolkits.threat-composer.aws.dev",
+                    "description": "CDN URL used to load IDE Threat Composer resources. Defaults to the AWS-Hosted CDN, use this to point to a custom or internal endpoint."
                 }
             }
         },
@@ -700,6 +706,10 @@
                                     "timeoutSec": {
                                         "description": "%AWS.configuration.description.awssam.debug.timeout%",
                                         "type": "number"
+                                    },
+                                    "tenantId": {
+                                        "description": "%AWS.configuration.description.awssam.debug.tenantId%",
+                                        "type": "string"
                                     },
                                     "pathMappings": {
                                         "type:": "array",
@@ -1835,14 +1845,14 @@
                     "when": "view != aws.smus.rootView && viewItem =~ /^(awsSagemakerSpaceRunningNode|awsSagemakerSpaceStoppedNode)$/"
                 },
                 {
-                    "command": "aws.hyperpod.openRemoteConnection",
+                    "command": "aws.hyperpod.stopSpace",
                     "group": "inline@0",
-                    "when": "viewItem == awsSagemakerHyperpodDevSpaceStoppedNode || viewItem == awsSagemakerHyperpodDevSpaceRunningNode"
+                    "when": "viewItem == awsSagemakerHyperpodDevSpaceRunningNode"
                 },
                 {
-                    "command": "aws.hyperpod.stopSpace",
+                    "command": "aws.hyperpod.openRemoteConnection",
                     "group": "inline@1",
-                    "when": "viewItem == awsSagemakerHyperpodDevSpaceRunningNode"
+                    "when": "viewItem == awsSagemakerHyperpodDevSpaceStoppedNode || viewItem == awsSagemakerHyperpodDevSpaceRunningNode"
                 },
                 {
                     "command": "aws.smus.openRemoteConnection",
@@ -1923,6 +1933,11 @@
                     "command": "aws.ec2.copyInstanceId",
                     "when": "view == aws.explorer && viewItem =~ /^(awsEc2(Running|Stopped|Pending)Node)$/",
                     "group": "2@0"
+                },
+                {
+                    "command": "aws.ec2.filterByTag",
+                    "when": "view == aws.explorer && viewItem =~ /^(awsEc2ParentNode)$/",
+                    "group": "inline"
                 },
                 {
                     "command": "aws.ecr.createRepository",
@@ -3393,6 +3408,18 @@
             {
                 "command": "aws.ec2.copyInstanceId",
                 "title": "%AWS.command.ec2.copyInstanceId%",
+                "category": "%AWS.title%",
+                "enablement": "isCloud9 || !aws.isWebExtHost",
+                "cloud9": {
+                    "cn": {
+                        "category": "%AWS.title.cn%"
+                    }
+                }
+            },
+            {
+                "command": "aws.ec2.filterByTag",
+                "title": "%AWS.command.ec2.filterByTag%",
+                "icon": "$(filter)",
                 "category": "%AWS.title%",
                 "enablement": "isCloud9 || !aws.isWebExtHost",
                 "cloud9": {
@@ -5729,53 +5756,60 @@
                     "fontCharacter": "\\f1e3"
                 }
             },
-            "aws-sagemakerunifiedstudio-spaces": {
+            "aws-sagemakerunifiedstudio-route-filled": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e4"
                 }
             },
-            "aws-sagemakerunifiedstudio-spaces-dark": {
+            "aws-sagemakerunifiedstudio-spaces": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e5"
                 }
             },
-            "aws-sagemakerunifiedstudio-symbol-int": {
+            "aws-sagemakerunifiedstudio-spaces-dark": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e6"
                 }
             },
-            "aws-sagemakerunifiedstudio-table": {
+            "aws-sagemakerunifiedstudio-symbol-int": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e7"
                 }
             },
-            "aws-schemas-registry": {
+            "aws-sagemakerunifiedstudio-table": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e8"
                 }
             },
-            "aws-schemas-schema": {
+            "aws-schemas-registry": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e9"
                 }
             },
-            "aws-stepfunctions-preview": {
+            "aws-schemas-schema": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1ea"
+                }
+            },
+            "aws-stepfunctions-preview": {
+                "description": "AWS Contributed Icon",
+                "default": {
+                    "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
+                    "fontCharacter": "\\f1eb"
                 }
             }
         },

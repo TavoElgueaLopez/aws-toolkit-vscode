@@ -3,11 +3,39 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as sinon from 'sinon'
+import * as vscode from 'vscode'
 import assert from 'assert'
-import { SearchParams } from '../../shared/vscode/uriHandler'
-import { parseConnectParams } from '../../sagemakerunifiedstudio/uriHandlers'
+import { SearchParams, UriHandler } from '../../shared/vscode/uriHandler'
+import { VSCODE_EXTENSION_ID_CONSTANTS } from '../../shared/extensionIds'
+import { parseConnectParams, register } from '../../sagemakerunifiedstudio/uriHandlers'
+import { amzHeaderParams, assertAmzHeadersInUrl } from '../awsService/sagemaker/uriHandlerTestUtils'
+
+function createConnectUri(params: { [key: string]: string }): vscode.Uri {
+    const query = Object.entries(params)
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+        .join('&')
+    return vscode.Uri.parse(`vscode://${VSCODE_EXTENSION_ID_CONSTANTS.awstoolkit}/connect/smus?${query}`)
+}
 
 describe('SMUS URI Handler', function () {
+    let handler: UriHandler
+    let deeplinkConnectStub: sinon.SinonStub
+
+    beforeEach(function () {
+        handler = new UriHandler()
+        deeplinkConnectStub = sinon.stub().resolves()
+        sinon.replace(require('../../awsService/sagemaker/commands'), 'deeplinkConnect', deeplinkConnectStub)
+
+        register({
+            uriHandler: handler,
+        } as any)
+    })
+
+    afterEach(function () {
+        sinon.restore()
+    })
+
     describe('parseConnectParams', function () {
         const validParams = {
             connection_identifier: 'arn:aws:sagemaker:us-west-2:123456789012:space/d-abc123/my-space',
@@ -83,6 +111,102 @@ describe('SMUS URI Handler', function () {
             assert.strictEqual(resultWithoutOptional.smus_domain_account_id, undefined)
             assert.strictEqual(resultWithoutOptional.smus_project_id, undefined)
             assert.strictEqual(resultWithoutOptional.smus_domain_region, undefined)
+        })
+
+        it('parses reconnect_base_url when present and leaves it undefined when absent', function () {
+            const reconnectBaseUrl =
+                'https://d-abc123xyz789.sagemaker-gamma.us-west-2.on.aws/projects/4m8bqfexample/code-spaces'
+            const withParam = parseConnectParams(
+                new SearchParams({ ...validParams, reconnect_base_url: reconnectBaseUrl })
+            )
+            assert.strictEqual(withParam.reconnect_base_url, reconnectBaseUrl)
+
+            const withoutParam = parseConnectParams(new SearchParams(validParams))
+            assert.strictEqual(withoutParam.reconnect_base_url, undefined)
+        })
+
+        it('recovers session from ws_url when session param is missing', function () {
+            const { session: _removed, ...paramsWithoutSession } = validParams
+            const paramsWithDataChannel = {
+                ...paramsWithoutSession,
+                ws_url: 'wss://ssmmessages.us-west-2.amazonaws.com/v1/data-channel/SageMaker-remote-abc123?role=publish_subscribe',
+            }
+            const query = new SearchParams(paramsWithDataChannel)
+            const result = parseConnectParams(query)
+
+            assert.strictEqual(result.session, 'SageMaker-remote-abc123')
+        })
+    })
+
+    it('properly encodes cell-number with spaces and special characters', async function () {
+        const params = {
+            connection_identifier: 'arn:aws:sagemaker:us-west-2:123456789012:space/d-abc123/my-space',
+            domain: 'd-abc123',
+            user_profile: 'test-user',
+            session: 'sess-abc123',
+            ws_url: 'wss://ssm.us-west-2.amazonaws.com/stream',
+            'cell-number': 'test/data with spaces',
+            token: 'bearer-token-xyz',
+        }
+
+        const uri = createConnectUri(params)
+        await handler.handleUri(uri)
+
+        assert.ok(deeplinkConnectStub.calledOnce)
+        const expectedUrl = 'wss://ssm.us-west-2.amazonaws.com/stream&cell-number=test%2Fdata%20with%20spaces'
+        assert.deepStrictEqual(deeplinkConnectStub.firstCall.args[3], expectedUrl)
+    })
+
+    it('includes AMZ headers in WebSocket URL when provided', async function () {
+        const params = {
+            connection_identifier: 'arn:aws:sagemaker:us-west-2:123456789012:space/d-abc123/my-space',
+            domain: 'd-abc123',
+            user_profile: 'test-user',
+            session: 'sess-abc123',
+            ws_url: 'wss://ssm.us-west-2.amazonaws.com/stream',
+            'cell-number': 'test123',
+            token: 'bearer-token-xyz',
+            ...amzHeaderParams,
+        }
+
+        const uri = createConnectUri(params)
+        await handler.handleUri(uri)
+
+        assert.ok(deeplinkConnectStub.calledOnce)
+        assertAmzHeadersInUrl(deeplinkConnectStub.firstCall.args[3], 'test123')
+    })
+
+    describe('reconnect_base_url threading', function () {
+        const baseParams = {
+            connection_identifier: 'arn:aws:sagemaker:us-west-2:123456789012:space/d-abc123/my-space',
+            domain: 'd-abc123',
+            user_profile: 'test-user',
+            session: 'sess-abc123',
+            ws_url: 'wss://ssm.us-west-2.amazonaws.com/stream',
+            'cell-number': '1',
+            token: 'bearer-token-xyz',
+        }
+        // Positional index of `refreshUrl` in the deeplinkConnect signature.
+        const refreshUrlArgIndex = 11
+        const isSmusArgIndex = 10
+
+        it('passes reconnect_base_url through as the refreshUrl argument', async function () {
+            const reconnectBaseUrl =
+                'https://d-abc123xyz789.sagemaker-gamma.us-west-2.on.aws/projects/4m8bqfexample/code-spaces'
+
+            await handler.handleUri(createConnectUri({ ...baseParams, reconnect_base_url: reconnectBaseUrl }))
+
+            assert.ok(deeplinkConnectStub.calledOnce)
+            assert.strictEqual(deeplinkConnectStub.firstCall.args[isSmusArgIndex], true)
+            assert.strictEqual(deeplinkConnectStub.firstCall.args[refreshUrlArgIndex], reconnectBaseUrl)
+        })
+
+        it('passes undefined refreshUrl when reconnect_base_url is absent', async function () {
+            await handler.handleUri(createConnectUri(baseParams))
+
+            assert.ok(deeplinkConnectStub.calledOnce)
+            assert.strictEqual(deeplinkConnectStub.firstCall.args[isSmusArgIndex], true)
+            assert.strictEqual(deeplinkConnectStub.firstCall.args[refreshUrlArgIndex], undefined)
         })
     })
 })

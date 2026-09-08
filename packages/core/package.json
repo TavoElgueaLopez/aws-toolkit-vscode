@@ -442,53 +442,60 @@
                     "fontCharacter": "\\f1e3"
                 }
             },
-            "aws-sagemakerunifiedstudio-spaces": {
+            "aws-sagemakerunifiedstudio-route-filled": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e4"
                 }
             },
-            "aws-sagemakerunifiedstudio-spaces-dark": {
+            "aws-sagemakerunifiedstudio-spaces": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e5"
                 }
             },
-            "aws-sagemakerunifiedstudio-symbol-int": {
+            "aws-sagemakerunifiedstudio-spaces-dark": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e6"
                 }
             },
-            "aws-sagemakerunifiedstudio-table": {
+            "aws-sagemakerunifiedstudio-symbol-int": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e7"
                 }
             },
-            "aws-schemas-registry": {
+            "aws-sagemakerunifiedstudio-table": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e8"
                 }
             },
-            "aws-schemas-schema": {
+            "aws-schemas-registry": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1e9"
                 }
             },
-            "aws-stepfunctions-preview": {
+            "aws-schemas-schema": {
                 "description": "AWS Contributed Icon",
                 "default": {
                     "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
                     "fontCharacter": "\\f1ea"
+                }
+            },
+            "aws-stepfunctions-preview": {
+                "description": "AWS Contributed Icon",
+                "default": {
+                    "fontPath": "./resources/fonts/aws-toolkit-icons.woff",
+                    "fontCharacter": "\\f1eb"
                 }
             }
         }
@@ -582,6 +589,8 @@
         "@amzn/codewhisperer-streaming": "file:../../src.gen/@amzn/codewhisperer-streaming",
         "@amzn/sagemaker-client": "file:../../src.gen/@amzn/sagemaker-client/1.0.0.tgz",
         "@amzn/glue-catalog-client": "file:../../src.gen/@amzn/glue-catalog-client/0.0.1.tgz",
+        "@amzn/datazone-custom-client": "file:../../src.gen/@amzn/datazone-custom-client/3.0.0.tgz",
+        "@amzn/sql-workbench-client": "file:../../src.gen/@amzn/sql-workbench-client/3.0.0.tgz",
         "@aws-sdk/client-accessanalyzer": "^3.888.0",
         "@aws-sdk/client-api-gateway": "<3.731.0",
         "@aws-sdk/client-apprunner": "<3.731.0",
@@ -596,12 +605,12 @@
         "@aws-sdk/client-ec2": "<3.731.0",
         "@aws-sdk/client-ecr": "~3.693.0",
         "@aws-sdk/client-ecs": "~3.693.0",
-        "@aws-sdk/client-eks": "^3.583.0",
+        "@aws-sdk/client-eks": "^3.975.0",
         "@aws-sdk/client-glue": "^3.852.0",
         "@aws-sdk/client-iam": "<3.731.0",
         "@aws-sdk/client-iot": "~3.693.0",
         "@aws-sdk/client-iotsecuretunneling": "~3.693.0",
-        "@aws-sdk/client-lambda": "<3.731.0",
+        "@aws-sdk/client-lambda": "^3.953.0",
         "@aws-sdk/client-redshift": "~3.693.0",
         "@aws-sdk/client-redshift-data": "~3.693.0",
         "@aws-sdk/client-redshift-serverless": "~3.693.0",
@@ -617,7 +626,7 @@
         "@aws-sdk/credential-provider-env": "<3.731.0",
         "@aws-sdk/credential-provider-process": "<3.731.0",
         "@aws-sdk/credential-provider-sso": "<3.731.0",
-        "@aws-sdk/credential-providers": "^3.936.0",
+        "@aws-sdk/credential-providers": "^3.975.0",
         "@aws-sdk/lib-storage": "<3.731.0",
         "@aws-sdk/property-provider": "<3.731.0",
         "@aws-sdk/protocol-http": "<3.731.0",

@@ -6,9 +6,15 @@
 import * as assert from 'assert'
 import * as sinon from 'sinon'
 import { DataZoneCustomClientHelper } from '../../../../sagemakerunifiedstudio/shared/client/datazoneCustomClientHelper'
-import * as DataZoneCustomClient from '../../../../sagemakerunifiedstudio/shared/client/datazonecustomclient'
+import {
+    DomainSummary,
+    ListDomainsCommand,
+    GetDomainCommand,
+    SearchGroupProfilesCommand,
+    SearchUserProfilesCommand,
+} from '@amzn/datazone-custom-client'
 
-type DataZoneDomain = DataZoneCustomClient.Types.DomainSummary
+type DataZoneDomain = DomainSummary
 
 describe('DataZoneCustomClientHelper', () => {
     let client: DataZoneCustomClientHelper
@@ -103,9 +109,7 @@ describe('DataZoneCustomClientHelper', () => {
             }
 
             const mockDataZoneClient = {
-                listDomains: sinon.stub().returns({
-                    promise: () => Promise.resolve(mockResponse),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(ListDomainsCommand)).resolves(mockResponse),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -124,6 +128,12 @@ describe('DataZoneCustomClientHelper', () => {
             assert.strictEqual(result.nextToken, 'next-token')
             assert.ok(result.domains[0].createdAt instanceof Date)
             assert.ok(result.domains[0].lastUpdatedAt instanceof Date)
+
+            // Verify API was called with correct command type and parameters
+            assert.ok(mockDataZoneClient.send.calledOnce)
+            const command = mockDataZoneClient.send.firstCall.args[0]
+            assert.strictEqual(command.input.maxResults, 10)
+            assert.strictEqual(command.input.status, 'AVAILABLE')
         })
 
         it('should handle empty results', async () => {
@@ -133,9 +143,7 @@ describe('DataZoneCustomClientHelper', () => {
             }
 
             const mockDataZoneClient = {
-                listDomains: sinon.stub().returns({
-                    promise: () => Promise.resolve(mockResponse),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(ListDomainsCommand)).resolves(mockResponse),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -369,9 +377,7 @@ describe('DataZoneCustomClientHelper', () => {
                 preferences: { DOMAIN_MODE: 'EXPRESS' },
             }
             const mockDataZoneClient = {
-                getDomain: sinon.stub().returns({
-                    promise: () => Promise.resolve(mockResponse),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(GetDomainCommand)).resolves(mockResponse),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -387,11 +393,10 @@ describe('DataZoneCustomClientHelper', () => {
             assert.strictEqual(result.domainVersion, '1.0')
             assert.deepStrictEqual(result.preferences, { DOMAIN_MODE: 'EXPRESS' })
 
-            // Verify the API was called with correct parameters
-            assert.ok(mockDataZoneClient.getDomain.calledOnce)
-            assert.deepStrictEqual(mockDataZoneClient.getDomain.firstCall.args[0], {
-                identifier: mockDomainId,
-            })
+            // Verify the API was called with correct command type and parameters
+            assert.ok(mockDataZoneClient.send.calledOnce)
+            const command = mockDataZoneClient.send.firstCall.args[0]
+            assert.strictEqual(command.input.identifier, mockDomainId)
         })
 
         it('should handle API errors when getting domain', async () => {
@@ -399,9 +404,7 @@ describe('DataZoneCustomClientHelper', () => {
             const error = new Error('Domain not found')
 
             const mockDataZoneClient = {
-                getDomain: sinon.stub().returns({
-                    promise: () => Promise.reject(error),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(GetDomainCommand)).rejects(error),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -409,10 +412,9 @@ describe('DataZoneCustomClientHelper', () => {
             await assert.rejects(() => client.getDomain(mockDomainId), error)
 
             // Verify the API was called with correct parameters
-            assert.ok(mockDataZoneClient.getDomain.calledOnce)
-            assert.deepStrictEqual(mockDataZoneClient.getDomain.firstCall.args[0], {
-                identifier: mockDomainId,
-            })
+            assert.ok(mockDataZoneClient.send.calledOnce)
+            const command = mockDataZoneClient.send.firstCall.args[0]
+            assert.strictEqual(command.input.identifier, mockDomainId)
         })
     })
 
@@ -425,7 +427,7 @@ describe('DataZoneCustomClientHelper', () => {
                     {
                         domainId: mockDomainId,
                         id: 'gp_profile1',
-                        status: 'ACTIVATED',
+                        status: 'ASSIGNED',
                         groupName: 'AdminGroup',
                         rolePrincipalArn: 'arn:aws:iam::123456789012:role/AdminRole',
                         rolePrincipalId: 'AIDAI123456789EXAMPLE',
@@ -433,7 +435,7 @@ describe('DataZoneCustomClientHelper', () => {
                     {
                         domainId: mockDomainId,
                         id: 'gp_profile2',
-                        status: 'ACTIVATED',
+                        status: 'ASSIGNED',
                         groupName: 'DeveloperGroup',
                         rolePrincipalArn: 'arn:aws:iam::123456789012:role/DeveloperRole',
                         rolePrincipalId: 'AIDAI987654321EXAMPLE',
@@ -443,9 +445,7 @@ describe('DataZoneCustomClientHelper', () => {
             }
 
             const mockDataZoneClient = {
-                searchGroupProfiles: sinon.stub().returns({
-                    promise: () => Promise.resolve(mockResponse),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(SearchGroupProfilesCommand)).resolves(mockResponse),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -461,12 +461,12 @@ describe('DataZoneCustomClientHelper', () => {
             assert.strictEqual(result.items[1].id, 'gp_profile2')
             assert.strictEqual(result.nextToken, 'next-token')
 
-            // Verify API was called with correct parameters
-            assert.ok(mockDataZoneClient.searchGroupProfiles.calledOnce)
-            const callArgs = mockDataZoneClient.searchGroupProfiles.firstCall.args[0]
-            assert.strictEqual(callArgs.domainIdentifier, mockDomainId)
-            assert.strictEqual(callArgs.groupType, 'IAM_ROLE_SESSION_GROUP')
-            assert.strictEqual(callArgs.maxResults, 50)
+            // Verify API was called with correct command type and parameters
+            assert.ok(mockDataZoneClient.send.calledOnce)
+            const command = mockDataZoneClient.send.firstCall.args[0]
+            assert.strictEqual(command.input.domainIdentifier, mockDomainId)
+            assert.strictEqual(command.input.groupType, 'IAM_ROLE_SESSION_GROUP')
+            assert.strictEqual(command.input.maxResults, 50)
         })
 
         it('should handle empty results', async () => {
@@ -476,9 +476,7 @@ describe('DataZoneCustomClientHelper', () => {
             }
 
             const mockDataZoneClient = {
-                searchGroupProfiles: sinon.stub().returns({
-                    promise: () => Promise.resolve(mockResponse),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(SearchGroupProfilesCommand)).resolves(mockResponse),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -492,9 +490,7 @@ describe('DataZoneCustomClientHelper', () => {
         it('should handle API errors', async () => {
             const error = new Error('API Error')
             const mockDataZoneClient = {
-                searchGroupProfiles: sinon.stub().returns({
-                    promise: () => Promise.reject(error),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(SearchGroupProfilesCommand)).rejects(error),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -508,7 +504,7 @@ describe('DataZoneCustomClientHelper', () => {
                     {
                         domainId: mockDomainId,
                         id: 'gp_profile3',
-                        status: 'ACTIVATED',
+                        status: 'ASSIGNED',
                         groupName: 'TestGroup',
                         rolePrincipalArn: 'arn:aws:iam::123456789012:role/TestRole',
                         rolePrincipalId: 'AIDAI111111111EXAMPLE',
@@ -518,9 +514,7 @@ describe('DataZoneCustomClientHelper', () => {
             }
 
             const mockDataZoneClient = {
-                searchGroupProfiles: sinon.stub().returns({
-                    promise: () => Promise.resolve(mockResponse),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(SearchGroupProfilesCommand)).resolves(mockResponse),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -532,9 +526,11 @@ describe('DataZoneCustomClientHelper', () => {
             assert.strictEqual(result.items.length, 1)
             assert.strictEqual(result.nextToken, undefined)
 
-            // Verify nextToken was passed
-            const callArgs = mockDataZoneClient.searchGroupProfiles.firstCall.args[0]
-            assert.strictEqual(callArgs.nextToken, 'previous-token')
+            // Verify send was called with correct command type and parameters
+            assert.ok(mockDataZoneClient.send.calledOnce)
+            const command = mockDataZoneClient.send.firstCall.args[0]
+            assert.strictEqual(command.input.domainIdentifier, mockDomainId)
+            assert.strictEqual(command.input.nextToken, 'previous-token')
         })
     })
 
@@ -573,9 +569,7 @@ describe('DataZoneCustomClientHelper', () => {
             }
 
             const mockDataZoneClient = {
-                searchUserProfiles: sinon.stub().returns({
-                    promise: () => Promise.resolve(mockResponse),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(SearchUserProfilesCommand)).resolves(mockResponse),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -591,12 +585,12 @@ describe('DataZoneCustomClientHelper', () => {
             assert.strictEqual(result.items[1].id, 'up_user2')
             assert.strictEqual(result.nextToken, 'next-token')
 
-            // Verify API was called with correct parameters
-            assert.ok(mockDataZoneClient.searchUserProfiles.calledOnce)
-            const callArgs = mockDataZoneClient.searchUserProfiles.firstCall.args[0]
-            assert.strictEqual(callArgs.domainIdentifier, mockDomainId)
-            assert.strictEqual(callArgs.userType, 'DATAZONE_IAM_USER')
-            assert.strictEqual(callArgs.maxResults, 50)
+            // Verify API was called with correct command type and parameters
+            assert.ok(mockDataZoneClient.send.calledOnce)
+            const command = mockDataZoneClient.send.firstCall.args[0]
+            assert.strictEqual(command.input.domainIdentifier, mockDomainId)
+            assert.strictEqual(command.input.userType, 'DATAZONE_IAM_USER')
+            assert.strictEqual(command.input.maxResults, 50)
         })
 
         it('should handle SSO user profiles', async () => {
@@ -620,9 +614,7 @@ describe('DataZoneCustomClientHelper', () => {
             }
 
             const mockDataZoneClient = {
-                searchUserProfiles: sinon.stub().returns({
-                    promise: () => Promise.resolve(mockResponse),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(SearchUserProfilesCommand)).resolves(mockResponse),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -643,9 +635,7 @@ describe('DataZoneCustomClientHelper', () => {
             }
 
             const mockDataZoneClient = {
-                searchUserProfiles: sinon.stub().returns({
-                    promise: () => Promise.resolve(mockResponse),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(SearchUserProfilesCommand)).resolves(mockResponse),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -661,9 +651,7 @@ describe('DataZoneCustomClientHelper', () => {
         it('should handle API errors', async () => {
             const error = new Error('API Error')
             const mockDataZoneClient = {
-                searchUserProfiles: sinon.stub().returns({
-                    promise: () => Promise.reject(error),
-                }),
+                send: sinon.stub().withArgs(sinon.match.instanceOf(SearchUserProfilesCommand)).rejects(error),
             }
 
             sinon.stub(client as any, 'getDataZoneCustomClient').resolves(mockDataZoneClient)
@@ -689,7 +677,7 @@ describe('DataZoneCustomClientHelper', () => {
                     {
                         id: 'gp_profile1',
                         rolePrincipalArn: mockRoleArn,
-                        status: 'ACTIVATED',
+                        status: 'ASSIGNED',
                     },
                 ],
                 nextToken: undefined,
@@ -710,7 +698,7 @@ describe('DataZoneCustomClientHelper', () => {
                     {
                         id: 'gp_profile1',
                         rolePrincipalArn: 'arn:aws:iam::123456789012:role/OtherRole',
-                        status: 'ACTIVATED',
+                        status: 'ASSIGNED',
                     },
                 ],
                 nextToken: undefined,
@@ -771,6 +759,29 @@ describe('DataZoneCustomClientHelper', () => {
             assert.strictEqual(searchStub.firstCall.args[1].searchText, 'arn:aws:iam::123456789012:role/AdminRole')
         })
 
+        it('should find matching user profile by sessionName when principalId does not contain session name', async () => {
+            const searchStub = sinon.stub(client, 'searchUserProfiles')
+            searchStub.onFirstCall().resolves({
+                items: [
+                    {
+                        id: 'up_user1',
+                        status: 'ACTIVATED',
+                        details: {
+                            iam: {
+                                arn: 'arn:aws:iam::123456789012:role/AdminRole',
+                                principalId: 'AIDAI123456789EXAMPLE',
+                                sessionName: 'my-session',
+                            },
+                        },
+                    },
+                ],
+                nextToken: undefined,
+            })
+
+            const result = await client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn)
+            assert.strictEqual(result, 'up_user1')
+        })
+
         it('should find matching user profile across multiple pages', async () => {
             const searchStub = sinon.stub(client, 'searchUserProfiles')
 
@@ -827,7 +838,7 @@ describe('DataZoneCustomClientHelper', () => {
             )
         })
 
-        it('should throw ToolkitError when no matching profile found', async () => {
+        it('should return empty string when no matching profile found', async () => {
             const searchStub = sinon.stub(client, 'searchUserProfiles')
             searchStub.resolves({
                 items: [
@@ -845,14 +856,8 @@ describe('DataZoneCustomClientHelper', () => {
                 nextToken: undefined,
             })
 
-            await assert.rejects(
-                () => client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn),
-                (err: any) => {
-                    assert.ok(err.message.includes('No user profile found'))
-                    assert.strictEqual(err.code, 'NoUserProfileFound')
-                    return true
-                }
-            )
+            const result = await client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn)
+            assert.strictEqual(result, '')
         })
 
         it('should handle profiles without IAM details', async () => {
@@ -861,22 +866,15 @@ describe('DataZoneCustomClientHelper', () => {
                 items: [
                     {
                         id: 'up_user1',
-                        status: 'ACTIVATED',
-                        details: {
-                            // No iam field
-                        },
+                        status: 'ASSIGNED',
+                        details: undefined,
                     },
                 ],
                 nextToken: undefined,
             })
 
-            await assert.rejects(
-                () => client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn),
-                (err: any) => {
-                    assert.ok(err.message.includes('No user profile found'))
-                    return true
-                }
-            )
+            const result = await client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn)
+            assert.strictEqual(result, '')
         })
 
         it('should handle API errors', async () => {
@@ -931,6 +929,105 @@ describe('DataZoneCustomClientHelper', () => {
                 searchStub.restore()
             }
         })
+
+        it('should NOT match when session name is a substring of principalId session (regression)', async function () {
+            // Regression: old .includes() logic would match "foo" against "foo-bar".
+            // The fix uses endsWith(`:${sessionName}`) so "foo" must NOT match ":foo-bar".
+            const fooArn = 'arn:aws:sts::123456789012:assumed-role/AdminRole/foo'
+            const searchStub = sinon.stub(client, 'searchUserProfiles')
+            searchStub.resolves({
+                items: [
+                    {
+                        id: 'up_foobar_profile',
+                        status: 'ACTIVATED',
+                        details: {
+                            iam: {
+                                arn: 'arn:aws:iam::123456789012:role/AdminRole',
+                                principalId: 'AIDAI123456789EXAMPLE:foo-bar',
+                                sessionName: 'foo-bar',
+                            },
+                        },
+                    },
+                ],
+                nextToken: undefined,
+            })
+
+            const result = await client.getUserProfileIdForSession(mockDomainId, fooArn)
+            assert.strictEqual(result, '', 'substring "foo" must not match principalId ending in ":foo-bar"')
+        })
+
+        it('should disambiguate by exact principalId suffix, not substring match', async function () {
+            // Two profiles share the same role but have different sessions.
+            // Session "foo" must resolve to the profile whose principalId ends in ":foo",
+            // not the one ending in ":foo-bar" (which the old .includes() matched first).
+            const fooArn = 'arn:aws:sts::123456789012:assumed-role/AdminRole/foo'
+            const searchStub = sinon.stub(client, 'searchUserProfiles')
+            searchStub.resolves({
+                items: [
+                    {
+                        id: 'up_foobar_profile',
+                        status: 'ACTIVATED',
+                        details: {
+                            iam: {
+                                arn: 'arn:aws:iam::123456789012:role/AdminRole',
+                                principalId: 'AIDAI123456789EXAMPLE:foo-bar',
+                            },
+                        },
+                    },
+                    {
+                        id: 'up_foo_profile',
+                        status: 'ACTIVATED',
+                        details: {
+                            iam: {
+                                arn: 'arn:aws:iam::123456789012:role/AdminRole',
+                                principalId: 'AIDAI987654321EXAMPLE:foo',
+                            },
+                        },
+                    },
+                ],
+                nextToken: undefined,
+            })
+
+            const result = await client.getUserProfileIdForSession(mockDomainId, fooArn)
+            assert.strictEqual(result, 'up_foo_profile')
+        })
+
+        it('should disambiguate by exact sessionName field, not substring match', async function () {
+            // Two profiles with sessionName field set — "foo" must match sessionName === "foo",
+            // not the one with sessionName "foo-bar".
+            const fooArn = 'arn:aws:sts::123456789012:assumed-role/AdminRole/foo'
+            const searchStub = sinon.stub(client, 'searchUserProfiles')
+            searchStub.resolves({
+                items: [
+                    {
+                        id: 'up_foobar_profile',
+                        status: 'ACTIVATED',
+                        details: {
+                            iam: {
+                                arn: 'arn:aws:iam::123456789012:role/AdminRole',
+                                principalId: 'AIDAI123456789EXAMPLE',
+                                sessionName: 'foo-bar',
+                            },
+                        },
+                    },
+                    {
+                        id: 'up_foo_profile',
+                        status: 'ACTIVATED',
+                        details: {
+                            iam: {
+                                arn: 'arn:aws:iam::123456789012:role/AdminRole',
+                                principalId: 'AIDAI987654321EXAMPLE',
+                                sessionName: 'foo',
+                            },
+                        },
+                    },
+                ],
+                nextToken: undefined,
+            })
+
+            const result = await client.getUserProfileIdForSession(mockDomainId, fooArn)
+            assert.strictEqual(result, 'up_foo_profile')
+        })
     })
 
     describe('Project and Space Filtering', () => {
@@ -947,7 +1044,7 @@ describe('DataZoneCustomClientHelper', () => {
                         {
                             id: mockGroupProfileId,
                             rolePrincipalArn: mockRoleArn,
-                            status: 'ACTIVATED',
+                            status: 'ASSIGNED',
                         },
                     ],
                     nextToken: undefined,
@@ -1048,14 +1145,8 @@ describe('DataZoneCustomClientHelper', () => {
                     nextToken: undefined,
                 })
 
-                await assert.rejects(
-                    () => client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn),
-                    (err: any) => {
-                        assert.ok(err.message.includes('No user profile found'))
-                        assert.strictEqual(err.code, 'NoUserProfileFound')
-                        return true
-                    }
-                )
+                const result = await client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn)
+                assert.strictEqual(result, '')
             })
 
             it('should handle API errors during space filtering', async () => {
@@ -1109,13 +1200,8 @@ describe('DataZoneCustomClientHelper', () => {
                     nextToken: undefined,
                 })
 
-                await assert.rejects(
-                    () => client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn),
-                    (err: any) => {
-                        assert.ok(err.message.includes('No user profile found'))
-                        return true
-                    }
-                )
+                const result = await client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn)
+                assert.strictEqual(result, '')
             })
         })
 
@@ -1208,13 +1294,8 @@ describe('DataZoneCustomClientHelper', () => {
                     nextToken: undefined,
                 })
 
-                await assert.rejects(
-                    () => client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn),
-                    (err: any) => {
-                        assert.ok(err.message.includes('No user profile found'))
-                        return true
-                    }
-                )
+                const result = await client.getUserProfileIdForSession(mockDomainId, mockAssumedRoleArn)
+                assert.strictEqual(result, '')
             })
         })
     })

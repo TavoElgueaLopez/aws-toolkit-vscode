@@ -15,7 +15,7 @@ import {
 import { CloseAction, ErrorAction, Message } from 'vscode-languageclient/node'
 import { formatMessage, toString } from './utils'
 import globals from '../../shared/extensionGlobals'
-import { getServiceEnvVarConfig } from '../../shared/vscode/env'
+import { extensionVersion, getServiceEnvVarConfig } from '../../shared/vscode/env'
 import { DevSettings } from '../../shared/settings'
 import {
     deployTemplateCommand,
@@ -49,7 +49,7 @@ import {
 import { openStackTemplateCommand } from './commands/openStackTemplate'
 import { selectRegionCommand } from './commands/regionCommands'
 import { AwsCredentialsService, encryptionKey } from './auth/credentials'
-import { ExtensionId, ExtensionName, Version, CloudFormationTelemetrySettings } from './extensionConfig'
+import { ExtensionId, ExtensionName, CloudFormationTelemetrySettings } from './extensionConfig'
 import { commandKey } from './utils'
 import { CloudFormationExplorer } from './explorer/explorer'
 import { handleTelemetryOptIn } from './telemetryOptIn'
@@ -70,7 +70,7 @@ import { RelatedResourceSelector } from './ui/relatedResourceSelector'
 
 import { StackActionCodeLensProvider } from './codelens/stackActionCodeLensProvider'
 import { registerStatusBarCommand } from './ui/statusBar'
-import { getClientId } from '../../shared/telemetry/util'
+import { getClientId, isAnonymousClientId } from '../../shared/telemetry/util'
 import { SettingsLspServerProvider } from './lsp-server/settingsLspServerProvider'
 import { DevLspServerProvider } from './lsp-server/devLspServerProvider'
 import { RemoteLspServerProvider } from './lsp-server/remoteLspServerProvider'
@@ -96,6 +96,8 @@ async function startClient(context: ExtensionContext) {
         ...DevSettings.instance.getServiceConfig('cloudformationLsp', {}),
         ...getServiceEnvVarConfig('cloudformationLsp', ['path', 'cloudformationEndpoint']),
     }
+
+    const clientId = getClientId(globals.globalState, telemetryEnabled)
 
     const serverProvider = new LspServerProvider([
         new DevLspServerProvider(context),
@@ -149,10 +151,10 @@ async function startClient(context: ExtensionContext) {
             aws: {
                 clientInfo: {
                     extension: {
-                        name: ExtensionId,
-                        version: Version,
+                        name: 'toolkit-vscode',
+                        version: extensionVersion,
                     },
-                    clientId: getClientId(globals.globalState, telemetryEnabled),
+                    clientId: isAnonymousClientId(clientId) ? undefined : clientId, // Only forward a real client id, otherwise let server handle it
                 },
                 telemetryEnabled: telemetryEnabled,
                 ...(cfnLspConfig.cloudformationEndpoint && {

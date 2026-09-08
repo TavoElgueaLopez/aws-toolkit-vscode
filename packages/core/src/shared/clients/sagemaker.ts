@@ -22,6 +22,9 @@ import {
     DescribeSpaceCommand,
     DescribeSpaceCommandInput,
     DescribeSpaceCommandOutput,
+    DescribeUserProfileCommand,
+    DescribeUserProfileCommandInput,
+    DescribeUserProfileCommandOutput,
     ListAppsCommandInput,
     ListSpacesCommandInput,
     ResourceSpec,
@@ -58,7 +61,7 @@ import { continueText, cancel } from '../localizedText'
 import { showConfirmationMessage } from '../utilities/messages'
 import { AwsCredentialIdentity } from '@aws-sdk/types'
 import globals from '../extensionGlobals'
-import { HyperpodCluster } from './kubectlClient'
+import { HyperpodCluster } from '../../awsService/sagemaker/detached-server/hyperpodTypes'
 import { EKSClient } from '@aws-sdk/client-eks'
 import { DevSettings } from '../settings'
 
@@ -133,6 +136,59 @@ export class SagemakerClient extends ClientWrapper<SageMakerClient> {
         return this.makeRequest(DescribeSpaceCommand, request)
     }
 
+    public describeUserProfile(request: DescribeUserProfileCommandInput): Promise<DescribeUserProfileCommandOutput> {
+        return this.makeRequest(DescribeUserProfileCommand, request)
+    }
+
+    /**
+     * Resolves which candidate user profiles are bound to the supplied IAM Identity Center user,
+     * using the authoritative `SingleSignOnUserValue` binding that SageMaker records on the user
+     * profile at creation time.
+     *
+     * Returns the matching user profile names keyed by domain. A domain with no match is omitted,
+     * which callers must treat as "this IdC user owns nothing in that domain" (fail closed) rather
+     * than as "unknown, show everything".
+     */
+    public async resolveUserProfilesForSsoUser(
+        userProfilesByDomain: ReadonlyMap<string, ReadonlySet<string>>,
+        ssoUserValue: string
+    ): Promise<Map<string, string[]>> {
+        const result = new Map<string, string[]>()
+        const target = ssoUserValue.toLowerCase()
+
+        for (const [domainId, userProfileNames] of userProfilesByDomain) {
+            const matched: string[] = []
+            for (const userProfileName of userProfileNames) {
+                try {
+                    const response = await this.describeUserProfile({
+                        DomainId: domainId,
+                        UserProfileName: userProfileName,
+                    })
+                    if (response.SingleSignOnUserValue?.toLowerCase() === target) {
+                        matched.push(userProfileName)
+                    }
+                } catch (err) {
+                    getLogger().error(
+                        'SagemakerClient: failed to describe a user profile in domain %s: %O',
+                        domainId,
+                        err
+                    )
+                }
+            }
+
+            if (matched.length > 0) {
+                result.set(domainId, matched)
+            } else {
+                getLogger().warn(
+                    'SagemakerClient: no user profile in domain %s has SingleSignOnUserValue matching the signed-in IdC user. Spaces in this domain will be hidden.',
+                    domainId
+                )
+            }
+        }
+
+        return result
+    }
+
     public updateSpace(request: UpdateSpaceCommandInput): Promise<UpdateSpaceCommandOutput> {
         return this.makeRequest(UpdateSpaceCommand, request)
     }
@@ -150,6 +206,28 @@ export class SagemakerClient extends ClientWrapper<SageMakerClient> {
             .flatten()
             .promise()
         return appsList[0] // At most one App for one SagemakerSpace
+    }
+
+    public async listAppsForDomain(domainId: string): Promise<AppDetails[]> {
+        return this.listApps({ DomainIdEquals: domainId }).flatten().promise()
+    }
+
+    /**
+     * Search for an app by space name from the domain's app list (case-insensitive).
+     * If space name is all lowercase, uses the more efficient SpaceNameEquals filter.
+     * Otherwise, fetches all apps in the domain and performs case-insensitive matching.
+     */
+    public async listAppsForDomainMatchSpaceIgnoreCase(
+        domainId: string,
+        spaceName: string
+    ): Promise<AppDetails | undefined> {
+        // If space name is all lowercase, use the efficient SpaceNameEquals filter
+        if (spaceName === spaceName.toLowerCase()) {
+            return this.listAppForSpace(domainId, spaceName)
+        }
+        // Otherwise, fetch all apps and do case-insensitive matching
+        const apps = await this.listAppsForDomain(domainId)
+        return apps.find((app) => app.SpaceName?.toLowerCase() === spaceName.toLowerCase())
     }
 
     public async startSpace(spaceName: string, domainId: string, skipInstanceTypePrompts: boolean = false) {

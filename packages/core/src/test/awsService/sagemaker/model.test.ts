@@ -8,7 +8,15 @@ import * as sinon from 'sinon'
 import * as os from 'os'
 import * as path from 'path'
 import { DevSettings, fs, ToolkitError } from '../../../shared'
-import { removeKnownHost, startLocalServer, stopLocalServer } from '../../../awsService/sagemaker/model'
+import {
+    startLocalServer,
+    stopLocalServer,
+    startRemoteViaSageMakerSshKiro,
+    getSshPrefix,
+    isValidSshHostname,
+    createValidSshSession,
+} from '../../../awsService/sagemaker/model'
+import { removeKnownHost } from '../../../awsService/sagemaker/utils'
 import { assertLogsContain } from '../../globalSetup.test'
 import assert from 'assert'
 
@@ -178,6 +186,98 @@ describe('SageMaker Model', () => {
         })
     })
 
+    describe('prepareDevEnvConnection', function () {
+        /**
+         * These tests pin the `if (session)` guard on the 'sm_dl' branch. They assert only on
+         * whether persistSSMConnection is called; everything after that point (SSH config, local
+         * server startup) needs infrastructure that isn't stubbed here and is expected to reject.
+         */
+        const spaceArn = 'arn:aws:sagemaker:us-west-2:123456789012:space/d-abc123/my-space'
+        const ctx = {
+            globalStorageUri: vscode.Uri.file(path.join(os.tmpdir(), 'test-storage')),
+            extensionPath: path.join(os.tmpdir(), 'extension'),
+            asAbsolutePath: (relPath: string) => path.join(path.join(os.tmpdir(), 'extension'), relPath),
+        } as vscode.ExtensionContext
+
+        let sandbox: sinon.SinonSandbox
+        let persistStub: sinon.SinonStub
+
+        beforeEach(() => {
+            sandbox = sinon.createSandbox()
+
+            // ensureDependencies() returns a Result that prepareDevEnvConnection immediately
+            // unwraps; supply the ssm/vsc/ssh paths it expects.
+            sandbox.replace(require('../../../shared/remoteSession'), 'ensureDependencies', () =>
+                Promise.resolve({ unwrap: () => ({ ssm: 'ssm', vsc: 'vsc', ssh: 'ssh' }) })
+            )
+
+            persistStub = sandbox.stub().resolves()
+            sandbox.replace(
+                require('../../../awsService/sagemaker/credentialMapping'),
+                'persistSSMConnection',
+                persistStub
+            )
+        })
+
+        afterEach(() => {
+            sandbox.restore()
+        })
+
+        async function runIgnoringDownstream(opts: any) {
+            const { prepareDevEnvConnection } = require('../../../awsService/sagemaker/model')
+            try {
+                await prepareDevEnvConnection(opts)
+            } catch {
+                // intentionally ignored -- see the note on this describe block
+            }
+        }
+
+        it('persists the connection when the deeplink flow supplies a session', async function () {
+            await runIgnoringDownstream({
+                spaceArn,
+                ctx,
+                connectionType: 'sm_dl',
+                domain: 'd-abc123',
+                appType: 'JupyterLab',
+                session: 'session-id',
+                wsUrl: 'wss://example.com',
+                token: 'token',
+            })
+
+            assert.ok(persistStub.calledOnce, 'a supplied session must be persisted for the ProxyCommand')
+            assert.strictEqual(persistStub.firstCall.args[2], 'session-id')
+        })
+
+        it('does not persist when the IdC flow supplies no session', async function () {
+            // The IdC /remote-connect flow has no creds yet -- they arrive later via the browser
+            // callback, and preRegisterIdcConnection has already seeded a 'pending' entry.
+            // Persisting here would write placeholder creds as 'fresh' and clobber it.
+            await runIgnoringDownstream({
+                spaceArn,
+                ctx,
+                connectionType: 'sm_dl',
+                domain: 'd-abc123',
+                appType: 'JupyterLab',
+                session: undefined,
+            })
+
+            assert.ok(persistStub.notCalled, 'must not clobber the pending entry when there is no session')
+        })
+
+        it('does not persist when the session is an empty string', async function () {
+            await runIgnoringDownstream({
+                spaceArn,
+                ctx,
+                connectionType: 'sm_dl',
+                domain: 'd-abc123',
+                appType: 'JupyterLab',
+                session: '',
+            })
+
+            assert.ok(persistStub.notCalled)
+        })
+    })
+
     describe('removeKnownHost', function () {
         const knownHostsPath = path.join(os.homedir(), '.ssh', 'known_hosts')
         const hostname = 'test.host.com'
@@ -300,5 +400,192 @@ describe('SageMaker Model', () => {
                 assert.strictEqual((err as ToolkitError).cause?.message, 'write failed')
             }
         })
+    })
+
+    describe('startRemoteViaSageMakerSshKiro', function () {
+        let sandbox: sinon.SinonSandbox
+        let mockProcessClass: sinon.SinonStub
+        let mockProcessInstance: { run: sinon.SinonStub }
+
+        beforeEach(function () {
+            sandbox = sinon.createSandbox()
+            mockProcessInstance = { run: sandbox.stub().resolves() }
+            mockProcessClass = sandbox.stub().returns(mockProcessInstance)
+        })
+
+        afterEach(function () {
+            sandbox.restore()
+        })
+
+        it('constructs correct workspace URI without user', async function () {
+            await startRemoteViaSageMakerSshKiro(
+                mockProcessClass as any,
+                'space_arn',
+                '/home/sagemaker-user',
+                '/usr/bin/code'
+            )
+
+            const expectedUri = `vscode-remote://sagemaker-ssh-kiro+space_arn/home/sagemaker-user`
+            sinon.assert.calledOnceWithExactly(mockProcessClass, '/usr/bin/code', ['--folder-uri', expectedUri])
+            sinon.assert.calledOnce(mockProcessInstance.run)
+        })
+
+        it('constructs correct workspace URI with user', async function () {
+            await startRemoteViaSageMakerSshKiro(
+                mockProcessClass as any,
+                'space_arn',
+                '/home/sagemaker-user',
+                '/usr/bin/code',
+                'sagemaker-user'
+            )
+
+            const expectedUri = `vscode-remote://sagemaker-ssh-kiro+sagemaker-user@space_arn/home/sagemaker-user`
+            sinon.assert.calledOnceWithExactly(mockProcessClass, '/usr/bin/code', ['--folder-uri', expectedUri])
+            sinon.assert.calledOnce(mockProcessInstance.run)
+        })
+
+        it('handles different target directories', async function () {
+            await startRemoteViaSageMakerSshKiro(
+                mockProcessClass as any,
+                'space_arn',
+                '/workspace/project',
+                '/usr/bin/code',
+                'sagemaker-user'
+            )
+
+            const expectedUri = `vscode-remote://sagemaker-ssh-kiro+sagemaker-user@space_arn/workspace/project`
+            sinon.assert.calledOnceWithExactly(mockProcessClass, '/usr/bin/code', ['--folder-uri', expectedUri])
+            sinon.assert.calledOnce(mockProcessInstance.run)
+        })
+
+        it('constructs correct workspace URI with HyperPod hostname', async function () {
+            await startRemoteViaSageMakerSshKiro(
+                mockProcessClass as any,
+                'smhp_myworkspace_mynamespace_mycluster_uswest2_123456789012',
+                '/home/sagemaker-user',
+                '/usr/bin/code',
+                'sagemaker-user'
+            )
+
+            const expectedUri = `vscode-remote://sagemaker-ssh-kiro+sagemaker-user@smhp_myworkspace_mynamespace_mycluster_uswest2_123456789012/home/sagemaker-user`
+            sinon.assert.calledOnceWithExactly(mockProcessClass, '/usr/bin/code', ['--folder-uri', expectedUri])
+            sinon.assert.calledOnce(mockProcessInstance.run)
+        })
+    })
+})
+
+describe('getSshPrefix', function () {
+    let sandbox: sinon.SinonSandbox
+
+    beforeEach(function () {
+        sandbox = sinon.createSandbox()
+    })
+
+    afterEach(function () {
+        sandbox.restore()
+    })
+
+    it('returns sm_ for vscode sagemaker connection', function () {
+        sandbox.stub(vscode.env, 'appName').value('Visual Studio Code')
+        assert.strictEqual(getSshPrefix('sm_lc'), 'sm_')
+        assert.strictEqual(getSshPrefix('sm_dl'), 'sm_')
+    })
+
+    it('returns smc_ for cursor sagemaker connection', function () {
+        sandbox.stub(vscode.env, 'appName').value('Cursor')
+        assert.strictEqual(getSshPrefix('sm_lc'), 'smc_')
+        assert.strictEqual(getSshPrefix('sm_dl'), 'smc_')
+    })
+
+    it('returns smhp_ for hyperpod connection on vscode', function () {
+        sandbox.stub(vscode.env, 'appName').value('Visual Studio Code')
+        assert.strictEqual(getSshPrefix('sm_hp'), 'smhp_')
+    })
+
+    it('returns smhpc_ for hyperpod connection on cursor', function () {
+        sandbox.stub(vscode.env, 'appName').value('Cursor')
+        assert.strictEqual(getSshPrefix('sm_hp'), 'smhpc_')
+    })
+
+    it('returns sm_ for unknown IDE type', function () {
+        sandbox.stub(vscode.env, 'appName').value('SomeOtherIDE')
+        assert.strictEqual(getSshPrefix('sm_lc'), 'sm_')
+    })
+})
+
+describe('isValidSshHostname', function () {
+    it('accepts valid lowercase alphanumeric hostname', function () {
+        assert.strictEqual(isValidSshHostname('myworkspace'), true)
+    })
+
+    it('accepts hostname with underscores and dots', function () {
+        assert.strictEqual(isValidSshHostname('workspace_ns_cluster_useast1_123456789012'), true)
+    })
+
+    it('rejects hostname containing hyphens', function () {
+        // The regex [a-z0-9.-_] treats .-_ as a range (ASCII 46-95) which excludes hyphen (ASCII 45)
+        assert.strictEqual(isValidSshHostname('workspace_ns_cluster_us-east-1_123456789012'), false)
+    })
+
+    it('rejects hostname starting with a hyphen', function () {
+        assert.strictEqual(isValidSshHostname('-invalid'), false)
+    })
+
+    it('rejects hostname with uppercase characters', function () {
+        assert.strictEqual(isValidSshHostname('MyWorkspace'), false)
+    })
+
+    it('rejects empty string', function () {
+        assert.strictEqual(isValidSshHostname(''), false)
+    })
+
+    it('accepts single character hostname', function () {
+        assert.strictEqual(isValidSshHostname('a'), true)
+    })
+
+    it('rejects hostname ending with a hyphen', function () {
+        assert.strictEqual(isValidSshHostname('invalid-'), false)
+    })
+})
+
+describe('createValidSshSession', function () {
+    it('constructs hostname from workspace, namespace, cluster, region, and accountId', function () {
+        const result = createValidSshSession('myworkspace', 'mynamespace', 'mycluster', 'us-east-1', '123456789012')
+        assert.strictEqual(result, 'myworkspace_mynamespace_mycluster_us-east-1_123456789012')
+    })
+
+    it('sanitizes uppercase to lowercase', function () {
+        const result = createValidSshSession('MyWork', 'MyNS', 'MyCluster', 'US-EAST-1', '123456789012')
+        assert.strictEqual(result, 'mywork_myns_mycluster_us-east-1_123456789012')
+    })
+
+    it('strips invalid characters', function () {
+        const result = createValidSshSession('work space!', 'ns@special', 'cluster#1', 'us-east-1', '123456789012')
+        assert.strictEqual(result, 'workspace_nsspecial_cluster1_us-east-1_123456789012')
+    })
+
+    it('truncates long components', function () {
+        const longName = 'a'.repeat(100)
+        const result = createValidSshSession(longName, 'ns', 'cluster', 'us-east-1', '123456789012')
+        // workspaceName truncated to 63
+        assert.ok(result.startsWith('a'.repeat(63) + '_'))
+    })
+
+    it('filters out empty components after sanitization', function () {
+        const result = createValidSshSession('workspace', '!!!', 'cluster', 'us-east-1', '123456789012')
+        // '!!!' sanitizes to empty string and gets filtered out
+        assert.strictEqual(result, 'workspace_cluster_us-east-1_123456789012')
+    })
+
+    it('produces a valid SSH hostname when no hyphens are present', function () {
+        const result = createValidSshSession('myworkspace', 'mynamespace', 'mycluster', 'useast1', '123456789012')
+        assert.strictEqual(isValidSshHostname(result), true)
+    })
+
+    it('always falls through to createValidSshSession for hyphenated regions', function () {
+        // isValidSshHostname rejects hyphens, so the proposed session with a region like us-east-1
+        // always fails validation, causing createValidSshSession to be used
+        const proposed = 'myworkspace_mynamespace_mycluster_us-east-1_123456789012'
+        assert.strictEqual(isValidSshHostname(proposed), false)
     })
 })

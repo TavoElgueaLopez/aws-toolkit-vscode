@@ -9,10 +9,36 @@ import { deeplinkConnect } from './commands'
 import { ExtContext } from '../../shared/extensions'
 import { telemetry } from '../../shared/telemetry/telemetry'
 
+const amzHeaders = [
+    'X-Amz-Security-Token',
+    'X-Amz-Algorithm',
+    'X-Amz-Date',
+    'X-Amz-SignedHeaders',
+    'X-Amz-Credential',
+    'X-Amz-Expires',
+    'X-Amz-Signature',
+] as const
+
 export function register(ctx: ExtContext) {
     async function connectHandler(params: ReturnType<typeof parseConnectParams>) {
-        await telemetry.sagemaker_deeplinkConnect.run(async () => {
-            const wsUrl = `${params.ws_url}&cell-number=${params['cell-number']}`
+        await telemetry.sagemaker_deeplinkConnect.run(async (span) => {
+            // Extract account metadata from space ARN
+            // ARN format: arn:aws:sagemaker:region:account-id:space/domain-id/space-name
+            const arnParts = params.connection_identifier.split(':')
+            span.record({
+                awsAccount: arnParts[4] || undefined,
+                awsRegion: arnParts[3] || undefined,
+            })
+
+            let wsUrl = `${params.ws_url}&cell-number=${encodeURIComponent(params['cell-number'])}`
+
+            for (const header of amzHeaders) {
+                const value = params[header]
+                if (value) {
+                    wsUrl += `&${header}=${encodeURIComponent(value)}`
+                }
+            }
+
             await deeplinkConnect(
                 ctx,
                 params.connection_identifier,
@@ -26,8 +52,8 @@ export function register(ctx: ExtContext) {
     }
 
     async function hyperPodConnectHandler(params: ReturnType<typeof parseHyperpodConnectParams>) {
-        await telemetry.sagemaker_deeplinkConnect.run(async () => {
-            const wsUrl = `${params.streamUrl}&cell-number=${params['cell-number']}`
+        await telemetry.hyperpod_deeplinkConnect.run(async () => {
+            const wsUrl = `${params.streamUrl}&cell-number=${encodeURIComponent(params['cell-number'])}`
             await deeplinkConnect(
                 ctx,
                 '',
@@ -38,7 +64,9 @@ export function register(ctx: ExtContext) {
                 undefined,
                 params.workspaceName,
                 params.namespace,
-                params.eksClusterArn
+                params.eksClusterArn,
+                false,
+                params.refreshUrl
             )
         })
     }
@@ -51,9 +79,10 @@ export function register(ctx: ExtContext) {
 
 export function parseHyperpodConnectParams(query: SearchParams) {
     const requiredParams = query.getFromKeysOrThrow('sessionId', 'streamUrl', 'sessionToken', 'cell-number')
-    const optionalParams = query.getFromKeys('workspaceName', 'namespace', 'eksClusterArn')
+    const optionalParams = query.getFromKeys('workspaceName', 'namespace', 'eksClusterArn', 'refreshUrl')
     return { ...requiredParams, ...optionalParams }
 }
+
 export function parseConnectParams(query: SearchParams) {
     const requiredParams = query.getFromKeysOrThrow(
         'connection_identifier',
@@ -66,5 +95,6 @@ export function parseConnectParams(query: SearchParams) {
     )
     const optionalParams = query.getFromKeys('app_type')
 
-    return { ...requiredParams, ...optionalParams }
+    const amzHeaderParams = query.getFromKeys(...amzHeaders)
+    return { ...requiredParams, ...optionalParams, ...amzHeaderParams }
 }
